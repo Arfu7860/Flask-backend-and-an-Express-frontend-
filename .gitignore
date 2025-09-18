@@ -5,5 +5,4 @@
     .env
     *.pem
     kubectl
-    k8s/
     minikube-linux-amd64
