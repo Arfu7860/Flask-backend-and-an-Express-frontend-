@@ -1,0 +1,89 @@
+version: 0.2
+
+# --- Environment Variables ---
+# Define common variables used throughout the script
+env:
+  secrets-manager:
+    # Local Variable Name : Secret ARN/Name : Secret Key (the key in the JSON/key-value secret)
+    DOCKER_USER: "arn:aws:secretsmanager:us-east-1:114035886766:secret:DockerHub-iUwIKO:username"
+    DOCKER_PASS: "arn:aws:secretsmanager:us-east-1:114035886766:secret:DockerHub-iUwIKO:password"
+    AWS_ACCOUNT_ID: "arn:aws:secretsmanager:us-east-1:114035886766:secret:AWS_ACCOUNT_ID-nJrMRF:ACCOUNT_ID"
+    # Set the ECR Repository URI where images will be pushed.
+    
+  variables:  
+    # Replace 'YOUR_ECR_REPO_NAME' with the actual repository name (e.g., flask-app-repo)
+    # If you have multiple services, you might handle the URI per service.
+    #ECR_REPO_URI: $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/arfu
+    AWS_REGION: us-east-1
+
+phases:
+  # --- 1. Install Phase ---
+  install:
+    # Ensure Docker 20 is available
+    
+    commands:
+      # Download and install Docker Compose v2.24.5
+      - echo "Installing Docker Compose..."
+      - curl -L "https://github.com/docker/compose/releases/download/v2.24.5/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
+      - chmod +x /usr/local/bin/docker-compose
+      - docker-compose version
+
+  # --- 2. Pre-Build Phase (Authentication) ---
+  pre_build:
+    commands:
+      - echo "Setting ECR Repo URI..."
+      # 3. Define the ECR_REPO_URI variable using the injected $AWS_ACCOUNT_ID within a command.
+      # This guarantees $AWS_ACCOUNT_ID is fully resolved before ECR_REPO_URI is set.
+      - ECR_REPO_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/arfu
+      
+      - echo "Logging in to Amazon ECR..."
+      # Authenticate Docker to ECR using the CodeBuild IAM role
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      
+      # This is the critical line
+      - echo "$DOCKER_PASS" | docker login --username $DOCKER_USER --password-stdin docker.io
+      
+      # Add a command to verify the login state (optional but useful)
+
+      # Define a unique tag (e.g., using the first 7 chars of the commit hash)
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+
+  # --- 3. Build Phase (Build and Tag) ---
+  build:
+    commands:
+      - echo "Building services with Docker Compose..."
+      # Build all services defined in docker-compose.yml
+      # The build step creates local images using the service names (e.g., 'backend')
+      # CORRECTED: Use the long flag V2 --project-name V1: Used -p <project_name>
+      - docker-compose -f ./Docker-compose.yml build
+
+      - echo "Tagging images..."
+      # --- Tagging Example for a backend service ---
+      # Replace 'backend' with the actual service name from your docker-compose.yml
+      # The image is built locally as 'backend:latest' (by default).
+      - docker tag flask-backend-and-an-express-frontend--backend:latest $ECR_REPO_URI:backend-$IMAGE_TAG
+      - docker tag flask-backend-and-an-express-frontend--backend:latest $ECR_REPO_URI:backend-latest
+      
+      # --- Tagging Example for a frontend service ---
+      # Replace 'frontend' with the actual service name
+      - docker tag flask-backend-and-an-express-frontend--frontend:latest $ECR_REPO_URI:frontend-$IMAGE_TAG
+      - docker tag flask-backend-and-an-express-frontend--frontend:latest $ECR_REPO_URI:frontend-latest
+
+  # --- 4. Post-Build Phase (Push) ---
+  post_build:
+    commands:
+      - echo "Pushing the Docker images to ECR..."
+      # Push the newly tagged images
+      - docker push $ECR_REPO_URI:backend-$IMAGE_TAG
+      - docker push $ECR_REPO_URI:backend-latest
+      - docker push $ECR_REPO_URI:frontend-$IMAGE_TAG
+      - docker push $ECR_REPO_URI:frontend-latest
+
+      - echo "Build and Push complete."
+
+artifacts:
+  # Do not include the **/* unless strictly necessary; it makes the artifact very large.
+  # If you only need files for deployment (e.g., for ECS/EKS), define them specifically.
+  # For a simple build-and-push, artifacts are sometimes not needed.
+  files:
+    - '**/*'
